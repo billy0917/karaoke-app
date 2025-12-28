@@ -220,8 +220,8 @@ function Room({ roomId, onLeave }) {
   const [currentVideo, setCurrentVideo] = useState(null);
   const [roomMuted, setRoomMuted] = useState(false);
   const playerRef = useRef(null);
-  const lastAppliedMuteCommandIdRef = useRef(null);
   const lastAppliedReplayCommandIdRef = useRef(null);
+  const [roomReplayCommandId, setRoomReplayCommandId] = useState(null);
 
   const roomRef = doc(db, 'rooms', roomId);
   const queueColRef = collection(db, 'rooms', roomId, 'queue');
@@ -315,38 +315,8 @@ function Room({ roomId, onLeave }) {
         setRoomMuted(false);
       }
 
-      // Apply mute/unmute commands only on the device that has a player open.
-      const muteCommandId = data.muteCommandId;
-      if (
-        showPlayer &&
-        playerRef.current &&
-        muteCommandId &&
-        muteCommandId !== lastAppliedMuteCommandIdRef.current
-      ) {
-        lastAppliedMuteCommandIdRef.current = muteCommandId;
-        try {
-          if (data.muted) playerRef.current.mute();
-          else playerRef.current.unMute();
-        } catch (e) {
-          console.error(e);
-        }
-      }
-
-      // Replay current song (seek to 0) only on the device that has a player open.
-      const replayCommandId = data.replayCommandId;
-      if (
-        showPlayer &&
-        playerRef.current &&
-        replayCommandId &&
-        replayCommandId !== lastAppliedReplayCommandIdRef.current
-      ) {
-        lastAppliedReplayCommandIdRef.current = replayCommandId;
-        try {
-          playerRef.current.seekTo(0, true);
-          playerRef.current.playVideo();
-        } catch (e) {
-          console.error(e);
-        }
+      if (data.replayCommandId) {
+        setRoomReplayCommandId(data.replayCommandId);
       }
     });
 
@@ -458,6 +428,35 @@ function Room({ roomId, onLeave }) {
       console.error(e);
     }
   };
+
+  // Apply room mute state whenever player becomes available or state changes.
+  useEffect(() => {
+    if (!showPlayer) return;
+    const player = playerRef.current;
+    if (!player) return;
+    try {
+      if (roomMuted) player.mute();
+      else player.unMute();
+    } catch (e) {
+      console.error(e);
+    }
+  }, [showPlayer, roomMuted]);
+
+  // Apply replay commands on the host player.
+  useEffect(() => {
+    if (!showPlayer) return;
+    const player = playerRef.current;
+    if (!player) return;
+    if (!roomReplayCommandId) return;
+    if (roomReplayCommandId === lastAppliedReplayCommandIdRef.current) return;
+    lastAppliedReplayCommandIdRef.current = roomReplayCommandId;
+    try {
+      player.seekTo(0, true);
+      player.playVideo();
+    } catch (e) {
+      console.error(e);
+    }
+  }, [showPlayer, roomReplayCommandId]);
 
   const onPlayerEnd = () => {
     advanceSong().catch(() => {});
