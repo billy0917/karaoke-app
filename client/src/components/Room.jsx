@@ -37,6 +37,80 @@ function formatIsoDurationToTimestamp(iso) {
   return hh ? `${hh}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+function isoDurationToSeconds(iso) {
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso || '');
+  if (!match) return 0;
+  const hours = parseInt(match[1] || '0', 10);
+  const minutes = parseInt(match[2] || '0', 10);
+  const seconds = parseInt(match[3] || '0', 10);
+  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+  return Number.isFinite(totalSeconds) ? totalSeconds : 0;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function youtubeTrendingMostPopular(regionCode = 'TW', pageToken = null) {
+  const apiKey = import.meta.env.VITE_YT_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing VITE_YT_API_KEY');
+  }
+
+  const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+  url.searchParams.set('part', 'snippet,contentDetails');
+  url.searchParams.set('chart', 'mostPopular');
+  // Music category only (avoid news/sports/etc.)
+  url.searchParams.set('videoCategoryId', '10');
+  // Fetch a bit more to compensate filtering (live/unknown duration)
+  url.searchParams.set('maxResults', '20');
+  url.searchParams.set('regionCode', regionCode);
+  url.searchParams.set('key', apiKey);
+  if (pageToken) {
+    url.searchParams.set('pageToken', pageToken);
+  }
+
+  const res = await fetchJsonWithTimeout(url, 12000);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`YouTube trending failed: ${res.status} ${text}`);
+  }
+  const json = await res.json();
+  const items = Array.isArray(json.items) ? json.items : [];
+
+  const videos = items.map((it) => {
+    const snippet = it?.snippet;
+    const thumb =
+      snippet?.thumbnails?.medium?.url || snippet?.thumbnails?.default?.url || '';
+    const iso = it?.contentDetails?.duration;
+    return {
+      id: it?.id,
+      title: snippet?.title || 'Unknown title',
+      thumbnail: thumb,
+      duration: formatIsoDurationToTimestamp(iso),
+      _durationSeconds: isoDurationToSeconds(iso),
+      author: snippet?.channelTitle || 'Unknown',
+      _live: snippet?.liveBroadcastContent && snippet.liveBroadcastContent !== 'none',
+    };
+  })
+    .filter((v) => v?.id)
+    .filter((v) => !v._live)
+    .filter((v) => v._durationSeconds > 0)
+    .map(({ _durationSeconds, _live, ...rest }) => rest);
+
+  return {
+    videos,
+    nextPageToken: json?.nextPageToken || null,
+  };
+}
+
 async function youtubeSearch(queryText) {
   const apiKey = import.meta.env.VITE_YT_API_KEY;
   if (!apiKey) {
@@ -120,6 +194,13 @@ function Room({ roomId, onLeave }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [trending, setTrending] = useState([]);
+  const [trendingLoading, setTrendingLoading] = useState(false);
+  const [trendingError, setTrendingError] = useState('');
+  const [trendingOpen, setTrendingOpen] = useState(false);
+  const [trendingPageIndex, setTrendingPageIndex] = useState(0);
+  const [trendingPageTokens, setTrendingPageTokens] = useState([null]);
+  const [trendingNextToken, setTrendingNextToken] = useState(null);
   const [queue, setQueue] = useState([]);
   const [volume, setVolume] = useState(100);
   const [showPlayer, setShowPlayer] = useState(false);
@@ -135,6 +216,29 @@ function Room({ roomId, onLeave }) {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
+  const loadTrending = async (opts = {}) => {
+    const { reset = false, pageIndex = trendingPageIndex } = opts;
+    const pageToken = trendingPageTokens[pageIndex] || null;
+    setTrendingLoading(true);
+    setTrendingError('');
+    try {
+      const { videos, nextPageToken } = await youtubeTrendingMostPopular('TW', pageToken);
+      setTrending(videos);
+      setTrendingNextToken(nextPageToken || null);
+    } catch (e) {
+      console.error(e);
+      setTrending([]);
+      setTrendingNextToken(null);
+      setTrendingError('熱門清單載入失敗（請檢查 VITE_YT_API_KEY 或網路）');
+      if (reset) {
+        setTrendingPageIndex(0);
+        setTrendingPageTokens([null]);
+      }
+    } finally {
+      setTrendingLoading(false);
+    }
+  };
+
   useEffect(() => {
     // Ensure room exists
     setDoc(
@@ -142,6 +246,12 @@ function Room({ roomId, onLeave }) {
       { createdAt: serverTimestamp(), updatedAt: serverTimestamp(), volume: 100 },
       { merge: true }
     ).catch(() => {});
+
+    // Trending first page
+    setTrendingPageIndex(0);
+    setTrendingPageTokens([null]);
+    setTrendingNextToken(null);
+    loadTrending({ reset: true, pageIndex: 0 });
 
     const unsubRoom = onSnapshot(roomRef, (snap) => {
       const data = snap.data();
@@ -167,6 +277,12 @@ function Room({ roomId, onLeave }) {
       unsubQueue();
     };
   }, [roomId]);
+
+  useEffect(() => {
+    // Load trending when paging
+    loadTrending({ pageIndex: trendingPageIndex });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trendingPageIndex]);
 
   const handleSearch = async (e) => {
     e.preventDefault();
@@ -204,9 +320,6 @@ function Room({ roomId, onLeave }) {
       if (isTop) {
         await normalizeQueue();
       }
-
-      setResults([]);
-      setSearchQuery('');
     } catch (e) {
       console.error(e);
       alert('Failed to add song');
@@ -336,6 +449,94 @@ function Room({ roomId, onLeave }) {
       </div>
 
       {/* Search */}
+      {/* Trending */}
+      <div style={{ marginBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+          <h3 style={{ margin: 0 }}>熱門歌曲（亞洲）</h3>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              type="button"
+              style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem' }}
+              onClick={() => setTrendingOpen((v) => !v)}
+            >
+              {trendingOpen ? '收起' : '展開'}
+            </button>
+            <button
+              type="button"
+              style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem' }}
+              onClick={() => {
+                setTrendingPageIndex(0);
+                setTrendingPageTokens([null]);
+                setTrendingNextToken(null);
+                loadTrending({ reset: true, pageIndex: 0 });
+              }}
+              disabled={trendingLoading}
+            >
+              {trendingLoading ? '...' : '更新'}
+            </button>
+          </div>
+        </div>
+
+        {trendingError ? (
+          <div style={{ color: 'var(--warning-color)', textAlign: 'left', marginBottom: '8px', fontSize: '0.9rem' }}>
+            {trendingError}
+          </div>
+        ) : null}
+
+        {trendingOpen ? (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                第 {trendingPageIndex + 1} 頁
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem' }}
+                  onClick={() => setTrendingPageIndex((i) => Math.max(0, i - 1))}
+                  disabled={trendingLoading || trendingPageIndex === 0}
+                >
+                  上一頁
+                </button>
+                <button
+                  type="button"
+                  style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem' }}
+                  onClick={() => {
+                    if (!trendingNextToken) return;
+                    const nextIndex = trendingPageIndex + 1;
+                    setTrendingPageTokens((prev) => {
+                      const next = prev.slice();
+                      if (next[nextIndex] == null) next[nextIndex] = trendingNextToken;
+                      return next;
+                    });
+                    setTrendingPageIndex(nextIndex);
+                  }}
+                  disabled={trendingLoading || !trendingNextToken}
+                >
+                  下一頁
+                </button>
+              </div>
+            </div>
+
+            <div className="results">
+              {trending.map((video) => (
+                <div key={video.id} className="video-item">
+                  <img src={video.thumbnail} alt={video.title} />
+                  <div className="video-info">
+                    <div className="video-title">{video.title}</div>
+                    <div className="video-meta">{video.author} • {video.duration}</div>
+                  </div>
+                  <div className="flex-col">
+                    <button onClick={() => addToQueue(video)} className="btn-primary" style={{ margin: 0 }}>+</button>
+                    <button onClick={() => addToQueue(video, true)} style={{ margin: 0, backgroundColor: 'var(--warning-color)', color: 'black' }}>Top</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </div>
+
       <form onSubmit={handleSearch} style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
         <input 
           type="text" 

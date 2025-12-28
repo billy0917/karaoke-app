@@ -5,5 +5,9 @@ client/dist
 server/rooms.json
 server/queue.json
 .env
+.env.local
+.env.*.local
+client/.env.local
+client/.env.*.local
 .DS_Store
 API.md
