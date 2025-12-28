@@ -1,12 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import io from 'socket.io-client';
 import Room from './components/Room';
-
-// Connect to the server
-// - Local dev: connect to the same origin (Vite proxy handles /api and /socket.io)
-// - GitHub Pages: set VITE_SOCKET_URL to your backend URL (e.g. https://your-app.onrender.com)
-const socketUrl = import.meta.env.VITE_SOCKET_URL;
-const socket = io(socketUrl || window.location.origin);
 
 function App() {
   const [roomId, setRoomId] = useState(localStorage.getItem('lastRoomId') || '');
@@ -66,7 +59,7 @@ function App() {
 
   return (
     <div className="App">
-      <Room socket={socket} roomId={roomId} onLeave={handleLeave} />
+      <Room roomId={roomId} onLeave={handleLeave} />
     </div>
   );
 }

@@ -1,9 +1,98 @@
 import React, { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
 import YouTube from 'react-youtube';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  writeBatch,
+} from 'firebase/firestore';
+import { db } from '../lib/firebase';
+
+function formatIsoDurationToTimestamp(iso) {
+  // ISO 8601 duration like PT1H2M3S
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso || '');
+  if (!match) return '';
+
+  const hours = parseInt(match[1] || '0', 10);
+  const minutes = parseInt(match[2] || '0', 10);
+  const seconds = parseInt(match[3] || '0', 10);
+
+  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+  if (totalSeconds <= 0) return '';
+
+  const hh = hours > 0 ? String(hours) : '';
+  const mm = String(hours > 0 ? minutes.toString().padStart(2, '0') : minutes);
+  const ss = String(seconds).padStart(2, '0');
+  return hh ? `${hh}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+async function youtubeSearch(queryText) {
+  const apiKey = import.meta.env.VITE_YT_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing VITE_YT_API_KEY');
+  }
+
+  const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
+  searchUrl.searchParams.set('part', 'snippet');
+  searchUrl.searchParams.set('type', 'video');
+  searchUrl.searchParams.set('maxResults', '10');
+  searchUrl.searchParams.set('q', queryText);
+  searchUrl.searchParams.set('key', apiKey);
+
+  const searchRes = await fetch(searchUrl);
+  if (!searchRes.ok) {
+    const text = await searchRes.text().catch(() => '');
+    throw new Error(`YouTube search failed: ${searchRes.status} ${text}`);
+  }
+  const searchJson = await searchRes.json();
+  const items = Array.isArray(searchJson.items) ? searchJson.items : [];
+  const videoIds = items.map((it) => it?.id?.videoId).filter(Boolean);
+  const snippetById = new Map(
+    items
+      .filter((it) => it?.id?.videoId)
+      .map((it) => [it.id.videoId, it.snippet])
+  );
+
+  if (videoIds.length === 0) return [];
+
+  const videosUrl = new URL('https://www.googleapis.com/youtube/v3/videos');
+  videosUrl.searchParams.set('part', 'contentDetails');
+  videosUrl.searchParams.set('id', videoIds.join(','));
+  videosUrl.searchParams.set('key', apiKey);
+
+  const videosRes = await fetch(videosUrl);
+  if (!videosRes.ok) {
+    const text = await videosRes.text().catch(() => '');
+    throw new Error(`YouTube videos fetch failed: ${videosRes.status} ${text}`);
+  }
+  const videosJson = await videosRes.json();
+  const durationsById = new Map(
+    (videosJson.items || []).map((it) => [it.id, it?.contentDetails?.duration])
+  );
+
+  return videoIds.map((id) => {
+    const snippet = snippetById.get(id);
+    const thumb = snippet?.thumbnails?.medium?.url || snippet?.thumbnails?.default?.url || '';
+    return {
+      id,
+      title: snippet?.title || 'Unknown title',
+      thumbnail: thumb,
+      duration: formatIsoDurationToTimestamp(durationsById.get(id)),
+      author: snippet?.channelTitle || 'Unknown',
+    };
+  });
+}
 
 function SortableItem(props) {
   const {
@@ -27,8 +116,7 @@ function SortableItem(props) {
   );
 }
 
-function Room({ socket, roomId, onLeave }) {
-  const apiBase = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '');
+function Room({ roomId, onLeave }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -38,6 +126,9 @@ function Room({ socket, roomId, onLeave }) {
   const [currentVideo, setCurrentVideo] = useState(null);
   const playerRef = useRef(null);
 
+  const roomRef = doc(db, 'rooms', roomId);
+  const queueColRef = collection(db, 'rooms', roomId, 'queue');
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
@@ -45,60 +136,98 @@ function Room({ socket, roomId, onLeave }) {
   );
 
   useEffect(() => {
-    // Join the room
-    socket.emit('joinRoom', roomId);
+    // Ensure room exists
+    setDoc(
+      roomRef,
+      { createdAt: serverTimestamp(), updatedAt: serverTimestamp(), volume: 100 },
+      { merge: true }
+    ).catch(() => {});
 
-    socket.on('queueUpdated', (newQueue) => {
-      setQueue(newQueue);
-      if (newQueue.length > 0) {
-        setCurrentVideo(newQueue[0]);
-      } else {
-        setCurrentVideo(null);
+    const unsubRoom = onSnapshot(roomRef, (snap) => {
+      const data = snap.data();
+      if (!data) return;
+      if (typeof data.volume === 'number') {
+        setVolume(data.volume);
+        if (playerRef.current) {
+          playerRef.current.setVolume(data.volume);
+        }
       }
     });
 
-    socket.on('volumeChange', (vol) => {
-      setVolume(vol);
-      if (playerRef.current) {
-        playerRef.current.setVolume(vol);
-      }
+    const qRef = query(queueColRef, orderBy('order', 'asc'));
+    const unsubQueue = onSnapshot(qRef, (snap) => {
+      const newQueue = snap.docs.map((d) => ({ uuid: d.id, ...d.data() }));
+      setQueue(newQueue);
+      if (newQueue.length > 0) setCurrentVideo(newQueue[0]);
+      else setCurrentVideo(null);
     });
 
     return () => {
-      socket.off('queueUpdated');
-      socket.off('volumeChange');
+      unsubRoom();
+      unsubQueue();
     };
-  }, [socket, roomId]);
+  }, [roomId]);
 
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!query.trim()) return;
     setLoading(true);
     try {
-      const url = apiBase
-        ? `${apiBase}/api/search?q=${encodeURIComponent(query)}`
-        : `/api/search?q=${encodeURIComponent(query)}`;
-
-      const res = await axios.get(url);
-      setResults(res.data);
+      const videos = await youtubeSearch(query.trim());
+      setResults(videos);
     } catch (err) {
       console.error(err);
-      alert('Search failed');
+      alert('Search failed (check VITE_YT_API_KEY)');
     } finally {
       setLoading(false);
     }
   };
 
-  const addToQueue = (video, isTop = false) => {
-    socket.emit('addSong', { ...video, isTop });
-    setResults([]); 
-    setQuery('');
+  const addToQueue = async (video, isTop = false) => {
+    try {
+      const snap = await getDocs(query(queueColRef, orderBy('order', 'asc')));
+      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const lastOrder = items.length === 0 ? -1 : (items[items.length - 1].order ?? items.length - 1);
+
+      const newDocRef = doc(queueColRef);
+      const order = isTop && items.length > 0 ? (items[0].order ?? 0) + 0.5 : lastOrder + 1;
+      await setDoc(newDocRef, {
+        id: video.id,
+        title: video.title,
+        thumbnail: video.thumbnail,
+        duration: video.duration,
+        author: video.author,
+        createdAt: serverTimestamp(),
+        order,
+      });
+
+      if (isTop) {
+        await normalizeQueue();
+      }
+
+      setResults([]);
+      setQuery('');
+    } catch (e) {
+      console.error(e);
+      alert('Failed to add song');
+    }
   };
 
   const handleVolumeChange = (e) => {
     const newVolume = parseInt(e.target.value, 10);
     setVolume(newVolume);
-    socket.emit('volumeChange', newVolume);
+    updateDoc(roomRef, { volume: newVolume, updatedAt: serverTimestamp() }).catch(() => {});
+  };
+
+  const normalizeQueue = async () => {
+    const snap = await getDocs(query(queueColRef, orderBy('order', 'asc')));
+    const docs = snap.docs;
+    if (docs.length === 0) return;
+    const batch = writeBatch(db);
+    docs.forEach((d, idx) => {
+      batch.update(d.ref, { order: idx });
+    });
+    await batch.commit();
   };
 
   const handleDragEnd = (event) => {
@@ -109,7 +238,13 @@ function Room({ socket, roomId, onLeave }) {
       if (oldIndex === 0 || newIndex === 0) return;
       const newQueue = arrayMove(queue, oldIndex, newIndex);
       setQueue(newQueue);
-      socket.emit('reorderQueue', newQueue);
+
+      // Persist reorder (re-number orders; keep index 0 as playing)
+      const batch = writeBatch(db);
+      newQueue.forEach((song, idx) => {
+        batch.update(doc(queueColRef, song.uuid), { order: idx });
+      });
+      batch.commit().catch((e) => console.error(e));
     }
   };
 
@@ -119,11 +254,19 @@ function Room({ socket, roomId, onLeave }) {
   };
 
   const onPlayerEnd = () => {
-    socket.emit('songEnded');
+    advanceSong().catch(() => {});
   };
 
   const onPlayerError = () => {
-    socket.emit('songEnded');
+    advanceSong().catch(() => {});
+  };
+
+  const advanceSong = async () => {
+    const firstSnap = await getDocs(query(queueColRef, orderBy('order', 'asc'), limit(1)));
+    if (!firstSnap.empty) {
+      await deleteDoc(firstSnap.docs[0].ref);
+    }
+    await normalizeQueue();
   };
 
   const playerOpts = {
@@ -185,7 +328,7 @@ function Room({ socket, roomId, onLeave }) {
           onChange={handleVolumeChange} 
         />
         <button 
-          onClick={() => socket.emit('skipSong')}
+          onClick={() => advanceSong().catch(() => {})}
           style={{ width: '100%', marginTop: '15px', backgroundColor: 'var(--warning-color)', color: '#000' }}
         >
           ⏭️ Skip Current Song
@@ -254,14 +397,35 @@ function Room({ socket, roomId, onLeave }) {
                   <span style={{ flex: 1, textAlign: 'left', fontSize: '0.9rem' }}>{song.title}</span>
                   <div style={{ display: 'flex', gap: '5px' }}>
                     <button 
-                      onClick={() => socket.emit('pinSong', song.uuid)}
+                      onClick={async () => {
+                        try {
+                          const snap = await getDocs(query(queueColRef, orderBy('order', 'asc')));
+                          const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                          if (docs.length < 2) return;
+
+                          const playing = docs[0];
+                          const rest = docs.slice(1);
+                          const idx = rest.findIndex((d) => d.id === song.uuid);
+                          if (idx < 0) return;
+                          const [picked] = rest.splice(idx, 1);
+                          const normalized = [playing, picked, ...rest];
+
+                          const batch = writeBatch(db);
+                          normalized.forEach((item, i) => {
+                            batch.update(doc(queueColRef, item.id), { order: i });
+                          });
+                          await batch.commit();
+                        } catch (e) {
+                          console.error(e);
+                        }
+                      }}
                       onPointerDown={(e) => e.stopPropagation()}
                       style={{ backgroundColor: 'var(--warning-color)', color: 'black', padding: '5px 10px', fontSize: '0.8rem', margin: 0 }}
                     >
                       Top
                     </button>
                     <button 
-                      onClick={() => socket.emit('removeSong', song.uuid)}
+                      onClick={() => deleteDoc(doc(queueColRef, song.uuid)).catch(() => {})}
                       onPointerDown={(e) => e.stopPropagation()}
                       style={{ backgroundColor: '#555', padding: '5px 10px', fontSize: '0.8rem', margin: 0 }}
                     >
