@@ -111,7 +111,7 @@ async function youtubeTrendingMostPopular(regionCode = 'TW', pageToken = null) {
   };
 }
 
-async function youtubeSearch(queryText) {
+async function youtubeSearch(queryText, pageToken = null) {
   const apiKey = import.meta.env.VITE_YT_API_KEY;
   if (!apiKey) {
     throw new Error('Missing VITE_YT_API_KEY');
@@ -123,8 +123,11 @@ async function youtubeSearch(queryText) {
   searchUrl.searchParams.set('maxResults', '10');
   searchUrl.searchParams.set('q', queryText);
   searchUrl.searchParams.set('key', apiKey);
+  if (pageToken) {
+    searchUrl.searchParams.set('pageToken', pageToken);
+  }
 
-  const searchRes = await fetch(searchUrl);
+  const searchRes = await fetchJsonWithTimeout(searchUrl, 12000);
   if (!searchRes.ok) {
     const text = await searchRes.text().catch(() => '');
     throw new Error(`YouTube search failed: ${searchRes.status} ${text}`);
@@ -145,7 +148,7 @@ async function youtubeSearch(queryText) {
   videosUrl.searchParams.set('id', videoIds.join(','));
   videosUrl.searchParams.set('key', apiKey);
 
-  const videosRes = await fetch(videosUrl);
+  const videosRes = await fetchJsonWithTimeout(videosUrl, 12000);
   if (!videosRes.ok) {
     const text = await videosRes.text().catch(() => '');
     throw new Error(`YouTube videos fetch failed: ${videosRes.status} ${text}`);
@@ -155,7 +158,7 @@ async function youtubeSearch(queryText) {
     (videosJson.items || []).map((it) => [it.id, it?.contentDetails?.duration])
   );
 
-  return videoIds.map((id) => {
+  const videos = videoIds.map((id) => {
     const snippet = snippetById.get(id);
     const thumb = snippet?.thumbnails?.medium?.url || snippet?.thumbnails?.default?.url || '';
     return {
@@ -166,6 +169,11 @@ async function youtubeSearch(queryText) {
       author: snippet?.channelTitle || 'Unknown',
     };
   });
+
+  return {
+    videos,
+    nextPageToken: searchJson?.nextPageToken || null,
+  };
 }
 
 function SortableItem(props) {
@@ -192,8 +200,13 @@ function SortableItem(props) {
 
 function Room({ roomId, onLeave }) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [searchPageIndex, setSearchPageIndex] = useState(0);
+  const [searchPageTokens, setSearchPageTokens] = useState([null]);
+  const [searchNextToken, setSearchNextToken] = useState(null);
   const [trending, setTrending] = useState([]);
   const [trendingLoading, setTrendingLoading] = useState(false);
   const [trendingError, setTrendingError] = useState('');
@@ -205,6 +218,7 @@ function Room({ roomId, onLeave }) {
   const [volume, setVolume] = useState(100);
   const [showPlayer, setShowPlayer] = useState(false);
   const [currentVideo, setCurrentVideo] = useState(null);
+  const [isPaused, setIsPaused] = useState(false);
   const playerRef = useRef(null);
 
   const roomRef = doc(db, 'rooms', roomId);
@@ -236,6 +250,35 @@ function Room({ roomId, onLeave }) {
       }
     } finally {
       setTrendingLoading(false);
+    }
+  };
+
+  const loadSearch = async (opts = {}) => {
+    const { reset = false, pageIndex = searchPageIndex, term = searchTerm } = opts;
+    const pageToken = searchPageTokens[pageIndex] || null;
+    if (!term) {
+      setResults([]);
+      setSearchNextToken(null);
+      return;
+    }
+
+    setLoading(true);
+    setSearchError('');
+    try {
+      const { videos, nextPageToken } = await youtubeSearch(term, pageToken);
+      setResults(videos);
+      setSearchNextToken(nextPageToken || null);
+    } catch (e) {
+      console.error(e);
+      setResults([]);
+      setSearchNextToken(null);
+      setSearchError('Search failed (check VITE_YT_API_KEY)');
+      if (reset) {
+        setSearchPageIndex(0);
+        setSearchPageTokens([null]);
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -279,6 +322,12 @@ function Room({ roomId, onLeave }) {
   }, [roomId]);
 
   useEffect(() => {
+    // Load search results when term/page changes
+    loadSearch({ pageIndex: searchPageIndex, term: searchTerm });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm, searchPageIndex]);
+
+  useEffect(() => {
     // Load trending when paging
     loadTrending({ pageIndex: trendingPageIndex });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -286,17 +335,12 @@ function Room({ roomId, onLeave }) {
 
   const handleSearch = async (e) => {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
-    setLoading(true);
-    try {
-      const videos = await youtubeSearch(searchQuery.trim());
-      setResults(videos);
-    } catch (err) {
-      console.error(err);
-      alert('Search failed (check VITE_YT_API_KEY)');
-    } finally {
-      setLoading(false);
-    }
+    const term = searchQuery.trim();
+    if (!term) return;
+    setSearchTerm(term);
+    setSearchPageIndex(0);
+    setSearchPageTokens([null]);
+    setSearchNextToken(null);
   };
 
   const addToQueue = async (video, isTop = false) => {
@@ -364,6 +408,7 @@ function Room({ roomId, onLeave }) {
   const onPlayerReady = (event) => {
     playerRef.current = event.target;
     playerRef.current.setVolume(volume);
+    setIsPaused(false);
   };
 
   const onPlayerEnd = () => {
@@ -372,6 +417,22 @@ function Room({ roomId, onLeave }) {
 
   const onPlayerError = () => {
     advanceSong().catch(() => {});
+  };
+
+  const togglePlayPause = () => {
+    const player = playerRef.current;
+    if (!player) return;
+    try {
+      if (isPaused) {
+        player.playVideo();
+        setIsPaused(false);
+      } else {
+        player.pauseVideo();
+        setIsPaused(true);
+      }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const advanceSong = async () => {
@@ -440,6 +501,16 @@ function Room({ roomId, onLeave }) {
           value={volume} 
           onChange={handleVolumeChange} 
         />
+
+        <button
+          type="button"
+          onClick={togglePlayPause}
+          disabled={!showPlayer || !currentVideo || !playerRef.current}
+          style={{ width: '100%', marginTop: '15px' }}
+        >
+          {isPaused ? '▶ Play' : '⏸ Pause'}
+        </button>
+
         <button 
           onClick={() => advanceSong().catch(() => {})}
           style={{ width: '100%', marginTop: '15px', backgroundColor: 'var(--warning-color)', color: '#000' }}
@@ -548,6 +619,47 @@ function Room({ roomId, onLeave }) {
           {loading ? '...' : '🔍'}
         </button>
       </form>
+
+      {searchError ? (
+        <div style={{ color: 'var(--warning-color)', textAlign: 'left', marginBottom: '8px', fontSize: '0.9rem' }}>
+          {searchError}
+        </div>
+      ) : null}
+
+      {(results.length > 0 || loading) ? (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+            搜尋結果第 {searchPageIndex + 1} 頁
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              type="button"
+              style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem' }}
+              onClick={() => setSearchPageIndex((i) => Math.max(0, i - 1))}
+              disabled={loading || searchPageIndex === 0}
+            >
+              上一頁
+            </button>
+            <button
+              type="button"
+              style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem' }}
+              onClick={() => {
+                if (!searchNextToken) return;
+                const nextIndex = searchPageIndex + 1;
+                setSearchPageTokens((prev) => {
+                  const next = prev.slice();
+                  if (next[nextIndex] == null) next[nextIndex] = searchNextToken;
+                  return next;
+                });
+                setSearchPageIndex(nextIndex);
+              }}
+              disabled={loading || !searchNextToken}
+            >
+              下一頁
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {/* Results */}
       <div className="results">
