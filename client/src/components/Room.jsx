@@ -11,7 +11,7 @@ import {
   limit,
   onSnapshot,
   orderBy,
-  query,
+  query as fsQuery,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -117,7 +117,7 @@ function SortableItem(props) {
 }
 
 function Room({ roomId, onLeave }) {
-  const [query, setQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [queue, setQueue] = useState([]);
@@ -154,7 +154,7 @@ function Room({ roomId, onLeave }) {
       }
     });
 
-    const qRef = query(queueColRef, orderBy('order', 'asc'));
+    const qRef = fsQuery(queueColRef, orderBy('order', 'asc'));
     const unsubQueue = onSnapshot(qRef, (snap) => {
       const newQueue = snap.docs.map((d) => ({ uuid: d.id, ...d.data() }));
       setQueue(newQueue);
@@ -170,10 +170,10 @@ function Room({ roomId, onLeave }) {
 
   const handleSearch = async (e) => {
     e.preventDefault();
-    if (!query.trim()) return;
+    if (!searchQuery.trim()) return;
     setLoading(true);
     try {
-      const videos = await youtubeSearch(query.trim());
+      const videos = await youtubeSearch(searchQuery.trim());
       setResults(videos);
     } catch (err) {
       console.error(err);
@@ -185,7 +185,7 @@ function Room({ roomId, onLeave }) {
 
   const addToQueue = async (video, isTop = false) => {
     try {
-      const snap = await getDocs(query(queueColRef, orderBy('order', 'asc')));
+      const snap = await getDocs(fsQuery(queueColRef, orderBy('order', 'asc')));
       const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       const lastOrder = items.length === 0 ? -1 : (items[items.length - 1].order ?? items.length - 1);
 
@@ -206,7 +206,7 @@ function Room({ roomId, onLeave }) {
       }
 
       setResults([]);
-      setQuery('');
+      setSearchQuery('');
     } catch (e) {
       console.error(e);
       alert('Failed to add song');
@@ -220,7 +220,7 @@ function Room({ roomId, onLeave }) {
   };
 
   const normalizeQueue = async () => {
-    const snap = await getDocs(query(queueColRef, orderBy('order', 'asc')));
+    const snap = await getDocs(fsQuery(queueColRef, orderBy('order', 'asc')));
     const docs = snap.docs;
     if (docs.length === 0) return;
     const batch = writeBatch(db);
@@ -262,7 +262,7 @@ function Room({ roomId, onLeave }) {
   };
 
   const advanceSong = async () => {
-    const firstSnap = await getDocs(query(queueColRef, orderBy('order', 'asc'), limit(1)));
+    const firstSnap = await getDocs(fsQuery(queueColRef, orderBy('order', 'asc'), limit(1)));
     if (!firstSnap.empty) {
       await deleteDoc(firstSnap.docs[0].ref);
     }
@@ -339,8 +339,8 @@ function Room({ roomId, onLeave }) {
       <form onSubmit={handleSearch} style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
         <input 
           type="text" 
-          value={query} 
-          onChange={(e) => setQuery(e.target.value)} 
+          value={searchQuery} 
+          onChange={(e) => setSearchQuery(e.target.value)} 
           placeholder="Search YouTube..." 
         />
         <button type="submit" disabled={loading} className="btn-primary" style={{ margin: 0, minWidth: '80px' }}>
@@ -399,7 +399,7 @@ function Room({ roomId, onLeave }) {
                     <button 
                       onClick={async () => {
                         try {
-                          const snap = await getDocs(query(queueColRef, orderBy('order', 'asc')));
+                          const snap = await getDocs(fsQuery(queueColRef, orderBy('order', 'asc')));
                           const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
                           if (docs.length < 2) return;
 
