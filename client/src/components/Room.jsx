@@ -218,9 +218,10 @@ function Room({ roomId, onLeave }) {
   const [volume, setVolume] = useState(100);
   const [showPlayer, setShowPlayer] = useState(false);
   const [currentVideo, setCurrentVideo] = useState(null);
-  const [roomPlayState, setRoomPlayState] = useState('playing');
+  const [roomMuted, setRoomMuted] = useState(false);
   const playerRef = useRef(null);
-  const lastAppliedPlayCommandIdRef = useRef(null);
+  const lastAppliedMuteCommandIdRef = useRef(null);
+  const lastAppliedReplayCommandIdRef = useRef(null);
 
   const roomRef = doc(db, 'rooms', roomId);
   const queueColRef = collection(db, 'rooms', roomId, 'queue');
@@ -307,25 +308,42 @@ function Room({ roomId, onLeave }) {
         }
       }
 
-      // Room-wide playback state (for remote control)
-      if (typeof data.playState === 'string') {
-        setRoomPlayState(data.playState);
+      // Room-wide mute state (for remote control)
+      if (typeof data.muted === 'boolean') {
+        setRoomMuted(data.muted);
       } else {
-        setRoomPlayState('playing');
+        setRoomMuted(false);
       }
 
-      // Apply play/pause commands only on the device that has a player open.
-      const playCommandId = data.playCommandId;
+      // Apply mute/unmute commands only on the device that has a player open.
+      const muteCommandId = data.muteCommandId;
       if (
         showPlayer &&
         playerRef.current &&
-        playCommandId &&
-        playCommandId !== lastAppliedPlayCommandIdRef.current
+        muteCommandId &&
+        muteCommandId !== lastAppliedMuteCommandIdRef.current
       ) {
-        lastAppliedPlayCommandIdRef.current = playCommandId;
+        lastAppliedMuteCommandIdRef.current = muteCommandId;
         try {
-          if (data.playState === 'paused') playerRef.current.pauseVideo();
-          else playerRef.current.playVideo();
+          if (data.muted) playerRef.current.mute();
+          else playerRef.current.unMute();
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      // Replay current song (seek to 0) only on the device that has a player open.
+      const replayCommandId = data.replayCommandId;
+      if (
+        showPlayer &&
+        playerRef.current &&
+        replayCommandId &&
+        replayCommandId !== lastAppliedReplayCommandIdRef.current
+      ) {
+        lastAppliedReplayCommandIdRef.current = replayCommandId;
+        try {
+          playerRef.current.seekTo(0, true);
+          playerRef.current.playVideo();
         } catch (e) {
           console.error(e);
         }
@@ -434,9 +452,8 @@ function Room({ roomId, onLeave }) {
     playerRef.current = event.target;
     playerRef.current.setVolume(volume);
     try {
-      if (roomPlayState === 'paused') {
-        playerRef.current.pauseVideo();
-      }
+      if (roomMuted) playerRef.current.mute();
+      else playerRef.current.unMute();
     } catch (e) {
       console.error(e);
     }
@@ -450,23 +467,34 @@ function Room({ roomId, onLeave }) {
     advanceSong().catch(() => {});
   };
 
-  const sendPlayState = async (nextState) => {
-    const playCommandId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    setRoomPlayState(nextState);
+  const sendMuted = async (muted) => {
+    const muteCommandId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setRoomMuted(muted);
     await setDoc(
       roomRef,
       {
-        playState: nextState,
-        playCommandId,
+        muted,
+        muteCommandId,
         updatedAt: serverTimestamp(),
       },
       { merge: true }
     );
   };
 
-  const togglePlayPause = () => {
-    const nextState = roomPlayState === 'paused' ? 'playing' : 'paused';
-    sendPlayState(nextState).catch((e) => console.error(e));
+  const toggleMute = () => {
+    sendMuted(!roomMuted).catch((e) => console.error(e));
+  };
+
+  const sendReplay = async () => {
+    const replayCommandId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await setDoc(
+      roomRef,
+      {
+        replayCommandId,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   };
 
   const advanceSong = async () => {
@@ -481,7 +509,7 @@ function Room({ roomId, onLeave }) {
     height: '390',
     width: '100%',
     playerVars: {
-      autoplay: roomPlayState === 'paused' ? 0 : 1,
+      autoplay: 1,
     },
   };
 
@@ -538,11 +566,20 @@ function Room({ roomId, onLeave }) {
 
         <button
           type="button"
-          onClick={togglePlayPause}
+          onClick={toggleMute}
           disabled={!currentVideo}
           style={{ width: '100%', marginTop: '15px' }}
         >
-          {roomPlayState === 'paused' ? '▶ Play' : '⏸ Pause'}
+          {roomMuted ? '🔊 取消靜音' : '🔇 靜音'}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => sendReplay().catch(() => {})}
+          disabled={!currentVideo}
+          style={{ width: '100%', marginTop: '15px' }}
+        >
+          🔁 重播
         </button>
 
         <button 
@@ -660,8 +697,25 @@ function Room({ roomId, onLeave }) {
         </div>
       ) : null}
 
-      {(results.length > 0 || loading) ? (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+      {/* Results */}
+      <div className="results">
+        {results.map((video) => (
+          <div key={video.id} className="video-item">
+            <img src={video.thumbnail} alt={video.title} />
+            <div className="video-info">
+              <div className="video-title">{video.title}</div>
+              <div className="video-meta">{video.author} • {video.duration}</div>
+            </div>
+            <div className="flex-col">
+              <button onClick={() => addToQueue(video)} className="btn-primary" style={{ margin: 0 }}>+</button>
+              <button onClick={() => addToQueue(video, true)} style={{ margin: 0, backgroundColor: 'var(--warning-color)', color: 'black' }}>Top</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {results.length > 0 ? (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', marginBottom: '8px' }}>
           <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
             搜尋結果第 {searchPageIndex + 1} 頁
           </div>
@@ -694,23 +748,6 @@ function Room({ roomId, onLeave }) {
           </div>
         </div>
       ) : null}
-
-      {/* Results */}
-      <div className="results">
-        {results.map((video) => (
-          <div key={video.id} className="video-item">
-            <img src={video.thumbnail} alt={video.title} />
-            <div className="video-info">
-              <div className="video-title">{video.title}</div>
-              <div className="video-meta">{video.author} • {video.duration}</div>
-            </div>
-            <div className="flex-col">
-              <button onClick={() => addToQueue(video)} className="btn-primary" style={{ margin: 0 }}>+</button>
-              <button onClick={() => addToQueue(video, true)} style={{ margin: 0, backgroundColor: 'var(--warning-color)', color: 'black' }}>Top</button>
-            </div>
-          </div>
-        ))}
-      </div>
 
       <hr style={{ margin: '30px 0', borderColor: '#444' }} />
 
