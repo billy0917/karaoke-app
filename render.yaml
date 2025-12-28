@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: karaoke-backend
+    env: node
+    rootDir: server
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 18
