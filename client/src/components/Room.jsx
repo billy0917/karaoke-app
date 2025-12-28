@@ -218,8 +218,9 @@ function Room({ roomId, onLeave }) {
   const [volume, setVolume] = useState(100);
   const [showPlayer, setShowPlayer] = useState(false);
   const [currentVideo, setCurrentVideo] = useState(null);
-  const [isPaused, setIsPaused] = useState(false);
+  const [roomPlayState, setRoomPlayState] = useState('playing');
   const playerRef = useRef(null);
+  const lastAppliedPlayCommandIdRef = useRef(null);
 
   const roomRef = doc(db, 'rooms', roomId);
   const queueColRef = collection(db, 'rooms', roomId, 'queue');
@@ -303,6 +304,30 @@ function Room({ roomId, onLeave }) {
         setVolume(data.volume);
         if (playerRef.current) {
           playerRef.current.setVolume(data.volume);
+        }
+      }
+
+      // Room-wide playback state (for remote control)
+      if (typeof data.playState === 'string') {
+        setRoomPlayState(data.playState);
+      } else {
+        setRoomPlayState('playing');
+      }
+
+      // Apply play/pause commands only on the device that has a player open.
+      const playCommandId = data.playCommandId;
+      if (
+        showPlayer &&
+        playerRef.current &&
+        playCommandId &&
+        playCommandId !== lastAppliedPlayCommandIdRef.current
+      ) {
+        lastAppliedPlayCommandIdRef.current = playCommandId;
+        try {
+          if (data.playState === 'paused') playerRef.current.pauseVideo();
+          else playerRef.current.playVideo();
+        } catch (e) {
+          console.error(e);
         }
       }
     });
@@ -408,7 +433,13 @@ function Room({ roomId, onLeave }) {
   const onPlayerReady = (event) => {
     playerRef.current = event.target;
     playerRef.current.setVolume(volume);
-    setIsPaused(false);
+    try {
+      if (roomPlayState === 'paused') {
+        playerRef.current.pauseVideo();
+      }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const onPlayerEnd = () => {
@@ -419,20 +450,23 @@ function Room({ roomId, onLeave }) {
     advanceSong().catch(() => {});
   };
 
+  const sendPlayState = async (nextState) => {
+    const playCommandId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setRoomPlayState(nextState);
+    await setDoc(
+      roomRef,
+      {
+        playState: nextState,
+        playCommandId,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  };
+
   const togglePlayPause = () => {
-    const player = playerRef.current;
-    if (!player) return;
-    try {
-      if (isPaused) {
-        player.playVideo();
-        setIsPaused(false);
-      } else {
-        player.pauseVideo();
-        setIsPaused(true);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    const nextState = roomPlayState === 'paused' ? 'playing' : 'paused';
+    sendPlayState(nextState).catch((e) => console.error(e));
   };
 
   const advanceSong = async () => {
@@ -447,7 +481,7 @@ function Room({ roomId, onLeave }) {
     height: '390',
     width: '100%',
     playerVars: {
-      autoplay: 1,
+      autoplay: roomPlayState === 'paused' ? 0 : 1,
     },
   };
 
@@ -505,10 +539,10 @@ function Room({ roomId, onLeave }) {
         <button
           type="button"
           onClick={togglePlayPause}
-          disabled={!showPlayer || !currentVideo || !playerRef.current}
+          disabled={!currentVideo}
           style={{ width: '100%', marginTop: '15px' }}
         >
-          {isPaused ? '▶ Play' : '⏸ Pause'}
+          {roomPlayState === 'paused' ? '▶ Play' : '⏸ Pause'}
         </button>
 
         <button 
