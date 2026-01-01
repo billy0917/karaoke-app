@@ -1,0 +1,19 @@
+[build]
+  base = "client"
+  command = "npm install && npm run build"
+  publish = "dist"
+
+[functions]
+  directory = "netlify/functions"
+
+# SPA fallback (React Router / client-side routes)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Backend-like API endpoints via Netlify Functions
+[[redirects]]
+  from = "/api/ai/parse-song"
+  to = "/.netlify/functions/ai-parse-song"
+  status = 200
