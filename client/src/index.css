@@ -22,6 +22,13 @@ html {
   background-color: #000;
 }
 
+#root {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
 body {
   margin: 0;
   padding: 20px 0; /* 用 padding 代替 container 的 margin，防止邊距重疊 */

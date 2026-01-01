@@ -57,11 +57,7 @@ function App() {
     );
   }
 
-  return (
-    <div className="App">
-      <Room roomId={roomId} onLeave={handleLeave} />
-    </div>
-  );
+  return <Room roomId={roomId} onLeave={handleLeave} />;
 }
 
 export default App;
