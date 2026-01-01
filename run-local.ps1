@@ -1,5 +1,6 @@
 param(
-  [int]$Port = 5173
+  [int]$Port = 5173,
+  [int]$ApiPort = 3001
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,10 +11,41 @@ function Write-Info([string]$msg) {
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $clientDir = Join-Path $repoRoot 'client'
+$serverDir = Join-Path $repoRoot 'server'
 
 if (-not (Test-Path $clientDir)) {
   throw "client folder not found: $clientDir"
 }
+
+if (-not (Test-Path $serverDir)) {
+  throw "server folder not found: $serverDir"
+}
+
+if (-not (Test-Path (Join-Path $serverDir 'package.json'))) {
+  throw "server/package.json not found"
+}
+
+if (-not (Test-Path (Join-Path $serverDir '.env'))) {
+  Write-Info 'Missing server/.env'
+  if (Test-Path (Join-Path $serverDir '.env.example')) {
+    Write-Info 'Create it by copying server/.env.example -> server/.env and fill in APIPLUS_API_KEY (optional for lyrics AI).'
+  } else {
+    Write-Info 'Create server/.env and fill in APIPLUS_API_KEY (optional for lyrics AI).'
+  }
+  Write-Host ''
+}
+
+Write-Info "Starting backend API on http://localhost:$ApiPort (separate window)"
+Write-Info 'Close that window to stop the backend.'
+
+# Start backend in a separate PowerShell window so it doesn't block Vite.
+# Note: Vite dev proxy expects http://localhost:3001 by default.
+Start-Process -FilePath 'powershell' -ArgumentList @(
+  '-NoProfile',
+  '-ExecutionPolicy', 'Bypass',
+  '-Command',
+  "Set-Location -Path '$serverDir'; npm install; `$env:PORT=$ApiPort; node .\\index.js"
+) | Out-Null
 
 Set-Location $clientDir
 

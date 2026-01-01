@@ -16,6 +16,17 @@ npm run dev
 ```
 伺服器將運行於 `http://localhost:3001`
 
+#### （可選）啟用 AI 自動判斷歌名/歌手（用於自動找歌詞）
+
+後端會提供 `/api/ai/parse-song`，用 AI 從 YouTube 標題/作者推測 `trackName` / `artistName`，再交給歌詞服務搜尋。
+
+- Windows PowerShell（同一個終端機視窗內設定後再啟動 server）：
+	- `setx APIPLUS_API_KEY "你的 key"`（設定後需重開終端機才會生效）
+	- 或：`$env:APIPLUS_API_KEY="你的 key"; npm run dev`
+- 可選模型：`APIPLUS_MODEL`（預設 `gpt-5-nano-2025-08-07`）
+
+注意：不要把 API Key 寫進前端程式碼或提交到 git。
+
 ### 2. 啟動前端 (Client)
 ```bash
 cd client

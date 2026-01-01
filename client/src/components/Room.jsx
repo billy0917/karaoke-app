@@ -58,6 +58,111 @@ async function fetchJsonWithTimeout(url, timeoutMs = 12000) {
   }
 }
 
+async function postJsonWithTimeout(url, body, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+      signal: controller.signal,
+    });
+    return res;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function aiParseSongForLyrics({ title, author }) {
+  let res;
+  try {
+    // AI calls can be slow / rate-limited; use a slightly larger timeout.
+    res = await postJsonWithTimeout('/api/ai/parse-song', { title, author }, 25000);
+  } catch (e) {
+    const msg = (e && typeof e.message === 'string' && e.message) ? e.message : '';
+    const name = (e && typeof e.name === 'string') ? e.name : '';
+    const isAbort = name === 'AbortError' || /aborted/i.test(msg);
+    if (isAbort) {
+      throw new Error('AI parse-song timeout：後端回應太久（可稍後再試，或檢查後端/AI 是否限流）');
+    }
+    throw new Error(`AI parse-song failed: 無法連線到後端 /api（請確認 server 已啟動在 http://localhost:3001）${msg ? `: ${msg}` : ''}`);
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    if (res.status === 422) {
+      throw new Error('AI 解析沒有回傳可用的歌名，請改用手動輸入歌名/關鍵字');
+    }
+    throw new Error(`AI parse-song failed: ${res.status} ${text}`);
+  }
+  const json = await res.json().catch(() => null);
+  return {
+    trackName: typeof json?.trackName === 'string' ? json.trackName : '',
+    artistName: typeof json?.artistName === 'string' ? json.artistName : '',
+    model: json?.model,
+    raw: typeof json?.raw === 'string' ? json.raw : '',
+  };
+}
+
+function normalizeYouTubeTitleForLyrics(title) {
+  if (!title) return '';
+  // Keep it conservative; just remove common bracketed suffixes.
+  return String(title)
+    .replace(/\s*[\[\(（【].*?[\]\)）】]\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeYouTubeAuthorForLyrics(author) {
+  if (!author) return '';
+  return String(author).replace(/\s*-\s*Topic\s*$/i, '').trim();
+}
+
+function preferCjkTitleIfPresent(name) {
+  const s = String(name || '').trim();
+  if (!s) return '';
+  const hasCjk = /[\u4e00-\u9fff]/u.test(s);
+  if (!hasCjk) return s;
+  // Keep CJK characters plus common separators/spaces; drop English subtitle/translation.
+  const cjkOnly = s
+    .replace(/[^\u4e00-\u9fff\s·・．。\-—–]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Prefer a single contiguous CJK run if possible.
+  const run = cjkOnly.match(/[\u4e00-\u9fff]{2,32}/u);
+  return run && run[0] ? run[0].trim() : (cjkOnly || s);
+}
+
+// Note: We intentionally avoid heuristic parsing of YouTube titles for lyrics search.
+// Lyrics search is restricted to either manual input or AI-parsed results.
+
+async function lrclibSearch({ trackName, artistName }) {
+  const url = new URL('https://lrclib.net/api/search');
+  if (trackName) url.searchParams.set('track_name', trackName);
+  if (artistName) url.searchParams.set('artist_name', artistName);
+
+  const res = await fetchJsonWithTimeout(url, 12000);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`LRCLIB search failed: ${res.status} ${text}`);
+  }
+
+  const json = await res.json().catch(() => null);
+  return {
+    url: url.toString(),
+    list: Array.isArray(json) ? json : [],
+  };
+}
+
+function pickBestLrclibRecord(list) {
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const withSynced = list.find((it) => typeof it?.syncedLyrics === 'string' && it.syncedLyrics.trim());
+  if (withSynced) return withSynced;
+  const withPlain = list.find((it) => typeof it?.plainLyrics === 'string' && it.plainLyrics.trim());
+  if (withPlain) return withPlain;
+  return null;
+}
+
 async function youtubeTrendingMostPopular(regionCode = 'TW', pageToken = null) {
   const apiKey = import.meta.env.VITE_YT_API_KEY;
   if (!apiKey) {
@@ -222,6 +327,29 @@ function Room({ roomId, onLeave }) {
   const playerRef = useRef(null);
   const lastAppliedReplayCommandIdRef = useRef(null);
   const [roomReplayCommandId, setRoomReplayCommandId] = useState(null);
+
+  const [lyricsText, setLyricsText] = useState('');
+  const [lyricsLoading, setLyricsLoading] = useState(false);
+  const [lyricsError, setLyricsError] = useState('');
+  const [lyricsMeta, setLyricsMeta] = useState(null);
+  const [lyricsRequestUrl, setLyricsRequestUrl] = useState('');
+  const [lyricsManualTrackName, setLyricsManualTrackName] = useState('');
+  const [lyricsOverrideTrackName, setLyricsOverrideTrackName] = useState('');
+  const [lyricsSearchDebug, setLyricsSearchDebug] = useState({
+    trackName: '',
+    artistName: '',
+    source: '',
+  });
+  const [lyricsAiDebug, setLyricsAiDebug] = useState({
+    status: 'idle',
+    trackName: '',
+    artistName: '',
+    model: '',
+    error: '',
+    raw: '',
+  });
+  const lyricsCacheRef = useRef(new Map());
+  const lyricsAiParseCacheRef = useRef(new Map());
 
   const roomRef = doc(db, 'rooms', roomId);
   const queueColRef = collection(db, 'rooms', roomId, 'queue');
@@ -466,6 +594,218 @@ function Room({ roomId, onLeave }) {
     advanceSong().catch(() => {});
   };
 
+  const loadLyricsForCurrent = async (opts = {}) => {
+    const { force = false, overrideTrackName = '' } = opts;
+    if (!currentVideo?.id) {
+      setLyricsText('');
+      setLyricsError('');
+      setLyricsMeta(null);
+      setLyricsRequestUrl('');
+      setLyricsSearchDebug({ trackName: '', artistName: '', source: '' });
+      setLyricsAiDebug({ status: 'idle', trackName: '', artistName: '', model: '', error: '', raw: '' });
+      return;
+    }
+
+    const cacheKey = currentVideo.id;
+    if (!force && lyricsCacheRef.current.has(cacheKey)) {
+      const cached = lyricsCacheRef.current.get(cacheKey);
+      setLyricsText(cached?.text || '');
+      setLyricsMeta(cached?.meta || null);
+      setLyricsError(cached?.error || '');
+      setLyricsRequestUrl(cached?.requestUrl || '');
+      setLyricsSearchDebug(cached?.searchDebug || { trackName: '', artistName: '', source: '' });
+      const cachedAi = lyricsAiParseCacheRef.current.get(cacheKey);
+      if (cachedAi?.trackName || cachedAi?.artistName) {
+        setLyricsAiDebug({
+          status: 'ok',
+          trackName: cachedAi.trackName || '',
+          artistName: cachedAi.artistName || '',
+          model: cachedAi.model || '',
+          error: '',
+          raw: cachedAi.raw || '',
+        });
+      } else {
+        setLyricsAiDebug({ status: 'idle', trackName: '', artistName: '', model: '', error: '', raw: '' });
+      }
+      return;
+    }
+
+    setLyricsLoading(true);
+    setLyricsError('');
+    setLyricsMeta(null);
+    setLyricsRequestUrl('');
+    setLyricsSearchDebug({ trackName: '', artistName: '', source: '' });
+    setLyricsAiDebug((prev) => ({ ...prev, status: 'idle', error: '' }));
+
+    const normalizedAuthor = normalizeYouTubeAuthorForLyrics(currentVideo.author);
+
+    const manualTitle = normalizeYouTubeTitleForLyrics(overrideTrackName);
+
+    // Trigger rule:
+    // - If user provides manualTitle, NEVER call AI for this fetch.
+    // - Otherwise, we may call AI (and cache) to guess a track name.
+    let aiParsed = null;
+    if (manualTitle) {
+      setLyricsAiDebug({ status: 'skipped', trackName: '', artistName: '', model: '', error: '', raw: '' });
+    } else {
+      aiParsed = lyricsAiParseCacheRef.current.get(cacheKey) || null;
+      if (!aiParsed || force) {
+        try {
+          setLyricsAiDebug({ status: 'loading', trackName: '', artistName: '', model: '', error: '', raw: '' });
+          const out = await aiParseSongForLyrics({ title: currentVideo.title || '', author: currentVideo.author || '' });
+          aiParsed = {
+            trackName: preferCjkTitleIfPresent(normalizeYouTubeTitleForLyrics(out?.trackName || '')),
+            artistName: '',
+            model: out?.model || '',
+            raw: out?.raw || '',
+          };
+          lyricsAiParseCacheRef.current.set(cacheKey, aiParsed);
+          setLyricsAiDebug({
+            status: 'ok',
+            trackName: aiParsed.trackName || '',
+            artistName: aiParsed.artistName || '',
+            model: aiParsed.model || '',
+            error: '',
+            raw: aiParsed.raw || '',
+          });
+        } catch (e) {
+          const message = (e && typeof e.message === 'string' && e.message) ? e.message : 'AI 解析失敗';
+          setLyricsAiDebug({ status: 'error', trackName: '', artistName: '', model: '', error: message, raw: '' });
+          aiParsed = lyricsAiParseCacheRef.current.get(cacheKey) || null;
+        }
+      } else if (aiParsed?.trackName || aiParsed?.artistName) {
+        setLyricsAiDebug({
+          status: 'ok',
+          trackName: aiParsed.trackName || '',
+          artistName: aiParsed.artistName || '',
+          model: aiParsed.model || '',
+          error: '',
+          raw: aiParsed.raw || '',
+        });
+      }
+    }
+
+    const candidateQueries = [];
+    // 1) Manual override (track name)
+    if (manualTitle) {
+      candidateQueries.push({ trackName: manualTitle, artistName: '', source: 'manual(track-only)' });
+    }
+
+    // 2) AI-parsed best guess
+    if (aiParsed?.trackName) {
+      // Prefer track-only (user preference). If artist exists, also try it as a narrower query.
+      candidateQueries.push({ trackName: aiParsed.trackName, artistName: '', source: 'ai(track-only)' });
+    }
+
+    // If neither manual nor AI provides a track name, stop early.
+    if (candidateQueries.length === 0) {
+      const err = '請先手動輸入歌名/關鍵字，或等待 AI 解析出歌名後再搜尋。';
+      setLyricsText('');
+      setLyricsError(err);
+      setLyricsMeta(null);
+      setLyricsRequestUrl('');
+      setLyricsSearchDebug({ trackName: '', artistName: '', source: '' });
+      lyricsCacheRef.current.set(cacheKey, {
+        text: '',
+        meta: null,
+        error: err,
+        requestUrl: '',
+        searchDebug: { trackName: '', artistName: '', source: '' },
+      });
+      return;
+    }
+
+    try {
+      let best = null;
+      let usedUrl = '';
+      let usedQuery = null;
+      for (const q of candidateQueries) {
+        const { url, list } = await lrclibSearch({ trackName: q.trackName, artistName: q.artistName });
+        usedUrl = url;
+        usedQuery = { trackName: q.trackName || '', artistName: q.artistName || '', source: q.source || '' };
+        best = pickBestLrclibRecord(list);
+        if (best) break;
+      }
+
+      setLyricsRequestUrl(usedUrl);
+      setLyricsSearchDebug(usedQuery || { trackName: '', artistName: '', source: '' });
+
+      if (!best) {
+        const err = '找不到歌詞（可嘗試按「重新抓取」或換不同關鍵字）';
+        setLyricsText('');
+        setLyricsError(err);
+        lyricsCacheRef.current.set(cacheKey, {
+          text: '',
+          meta: null,
+          error: err,
+          requestUrl: usedUrl,
+          searchDebug: usedQuery || { trackName: '', artistName: '', source: '' },
+        });
+        return;
+      }
+
+      const meta = {
+        id: best.id ?? null,
+        title: best.trackName || normalizedTitle,
+        artist: best.artistName || normalizedAuthor,
+      };
+
+      const lyrics =
+        (typeof best.syncedLyrics === 'string' && best.syncedLyrics.trim())
+          ? best.syncedLyrics
+          : (typeof best.plainLyrics === 'string' ? best.plainLyrics : '');
+
+      setLyricsText(lyrics);
+      setLyricsMeta(meta);
+      setLyricsError('');
+      lyricsCacheRef.current.set(cacheKey, {
+        text: lyrics,
+        meta,
+        error: '',
+        requestUrl: usedUrl,
+        searchDebug: usedQuery || { trackName: '', artistName: '', source: '' },
+      });
+    } catch (e) {
+      console.error(e);
+      const message =
+        '歌詞載入失敗（可能是網路或歌詞服務暫時不可用）。可稍後再試。';
+      setLyricsText('');
+      setLyricsMeta(null);
+      setLyricsError(message);
+      lyricsCacheRef.current.set(cacheKey, {
+        text: '',
+        meta: null,
+        error: message,
+        requestUrl: '',
+        searchDebug: { trackName: '', artistName: '', source: '' },
+      });
+    } finally {
+      setLyricsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Auto load lyrics when the playing song changes.
+    setLyricsOverrideTrackName('');
+    setLyricsManualTrackName('');
+    loadLyricsForCurrent({ force: false }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentVideo?.id]);
+
+  const handleManualLyricsSearch = () => {
+    if (!currentVideo?.id) return;
+    const q = (lyricsManualTrackName || '').trim();
+    if (!q) return;
+    setLyricsOverrideTrackName(q);
+    loadLyricsForCurrent({ force: true, overrideTrackName: q }).catch(() => {});
+  };
+
+  const clearManualLyricsSearch = () => {
+    setLyricsOverrideTrackName('');
+    setLyricsManualTrackName('');
+    loadLyricsForCurrent({ force: true, overrideTrackName: '' }).catch(() => {});
+  };
+
   const sendMuted = async (muted) => {
     const muteCommandId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setRoomMuted(muted);
@@ -589,6 +929,132 @@ function Room({ roomId, onLeave }) {
         </button>
       </div>
 
+      {/* Lyrics */}
+      <div style={{ marginTop: '16px', marginBottom: '20px', padding: '12px', backgroundColor: 'var(--surface-color)', borderRadius: '8px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+          <h3 style={{ margin: 0 }}>歌詞</h3>
+          <button
+            type="button"
+            onClick={() => loadLyricsForCurrent({ force: true, overrideTrackName: lyricsOverrideTrackName || '' }).catch(() => {})}
+            disabled={!currentVideo || lyricsLoading}
+            style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem' }}
+          >
+            {lyricsLoading ? '...' : '重新抓取'}
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
+          <input
+            type="text"
+            value={lyricsManualTrackName}
+            onChange={(e) => setLyricsManualTrackName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleManualLyricsSearch();
+              }
+            }}
+            placeholder="手動輸入歌名/關鍵字來找歌詞"
+            disabled={!currentVideo || lyricsLoading}
+            style={{ flex: 1, padding: '8px', margin: 0 }}
+          />
+          <button
+            type="button"
+            onClick={handleManualLyricsSearch}
+            disabled={!currentVideo || lyricsLoading || !(lyricsManualTrackName || '').trim()}
+            style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
+          >
+            用歌名搜尋
+          </button>
+          <button
+            type="button"
+            onClick={clearManualLyricsSearch}
+            disabled={!currentVideo || lyricsLoading || !lyricsOverrideTrackName}
+            style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
+          >
+            清除
+          </button>
+        </div>
+
+        {lyricsOverrideTrackName ? (
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '8px' }}>
+            目前搜尋關鍵字：{lyricsOverrideTrackName}
+          </div>
+        ) : null}
+
+        <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '8px' }}>
+          <div>
+            AI 解析：
+            {lyricsAiDebug.status === 'loading' ? '解析中…' : ''}
+            {lyricsAiDebug.status === 'idle' ? '尚未解析' : ''}
+            {lyricsAiDebug.status === 'skipped' ? '已跳過（使用手動搜尋）' : ''}
+            {lyricsAiDebug.status === 'ok' ? ((lyricsAiDebug.trackName || lyricsAiDebug.artistName || lyricsAiDebug.raw) ? '已解析' : '已解析（無結果）') : ''}
+            {lyricsAiDebug.status === 'error' ? '失敗' : ''}
+            {lyricsAiDebug.model ? `（${lyricsAiDebug.model}）` : ''}
+          </div>
+          <div>AI 歌名：{lyricsAiDebug.trackName ? lyricsAiDebug.trackName : '—'}</div>
+          {lyricsAiDebug.raw ? (
+            <div style={{ marginTop: '6px' }}>
+              <div style={{ marginBottom: '4px' }}>AI 原始輸出：</div>
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '0.8rem', opacity: 0.9 }}>
+                {lyricsAiDebug.raw}
+              </pre>
+            </div>
+          ) : null}
+          {lyricsAiDebug.error ? (
+            <div style={{ color: 'var(--warning-color)', marginTop: '4px' }}>
+              {lyricsAiDebug.error}
+            </div>
+          ) : null}
+        </div>
+
+        {(lyricsSearchDebug.trackName || lyricsSearchDebug.artistName || lyricsSearchDebug.source) ? (
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '8px' }}>
+            本次歌詞查詢：
+            {lyricsSearchDebug.source ? `（${lyricsSearchDebug.source}）` : ''}
+            {' '}{lyricsSearchDebug.trackName || '—'}
+            {lyricsSearchDebug.artistName ? ` / ${lyricsSearchDebug.artistName}` : ''}
+          </div>
+        ) : null}
+
+        {currentVideo ? (
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '8px' }}>
+            {lyricsMeta?.title || normalizeYouTubeTitleForLyrics(currentVideo.title)}
+            {lyricsMeta?.artist || currentVideo.author ? ` • ${lyricsMeta?.artist || normalizeYouTubeAuthorForLyrics(currentVideo.author)}` : ''}
+          </div>
+        ) : (
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '8px' }}>
+            目前沒有播放中的歌曲
+          </div>
+        )}
+
+        {lyricsError ? (
+          <div style={{ color: 'var(--warning-color)', textAlign: 'left', marginBottom: '8px', fontSize: '0.9rem' }}>
+            {lyricsError}
+          </div>
+        ) : null}
+
+        {lyricsRequestUrl ? (
+          <div style={{ marginBottom: '8px', fontSize: '0.85rem' }}>
+            <a href={lyricsRequestUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--text-secondary)' }}>
+              測試歌詞 API 連結
+            </a>
+          </div>
+        ) : null}
+
+        {lyricsText ? (
+          <pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: '0.95rem', lineHeight: 1.5 }}>
+            {lyricsText}
+          </pre>
+        ) : (
+          !lyricsError && currentVideo ? (
+            <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+              {lyricsLoading ? '載入中…' : '尚未取得歌詞'}
+            </div>
+          ) : null
+        )}
+      </div>
+
       {/* Search */}
       {/* Trending */}
       <div style={{ marginBottom: '16px' }}>
@@ -603,7 +1069,6 @@ function Room({ roomId, onLeave }) {
               {trendingOpen ? '收起' : '展開'}
             </button>
             <button
-              type="button"
               style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem' }}
               onClick={() => {
                 setTrendingPageIndex(0);
