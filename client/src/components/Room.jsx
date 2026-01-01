@@ -328,6 +328,7 @@ function Room({ roomId, onLeave }) {
   const lastAppliedReplayCommandIdRef = useRef(null);
   const [roomReplayCommandId, setRoomReplayCommandId] = useState(null);
 
+  const [showLyricsModal, setShowLyricsModal] = useState(false);
   const [lyricsText, setLyricsText] = useState('');
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const [lyricsError, setLyricsError] = useState('');
@@ -853,21 +854,22 @@ function Room({ roomId, onLeave }) {
   };
 
   return (
-    <div className="container">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+    <>
+      <div className="container">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <h2 style={{ margin: 0 }}>Room: {roomId}</h2>
-        <button onClick={onLeave} style={{ backgroundColor: '#333', fontSize: '0.8rem', padding: '5px 10px' }}>Exit</button>
+        <button onClick={onLeave} style={{ fontSize: '0.8rem', padding: '8px 16px', background: 'rgba(255,0,0,0.2)', borderColor: 'rgba(255,0,0,0.3)' }}>Exit</button>
       </div>
 
-      <div style={{ marginBottom: '20px', padding: '10px', backgroundColor: 'var(--surface-color)', borderRadius: '8px' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+      <div className="control-panel" style={{ marginBottom: '20px', padding: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', margin: 0 }}>
           <input 
             type="checkbox" 
             checked={showPlayer} 
             onChange={(e) => setShowPlayer(e.target.checked)} 
-            style={{ width: '20px', height: '20px' }}
+            style={{ width: '22px', height: '22px', cursor: 'pointer' }}
           />
-          <span style={{ fontWeight: 'bold' }}>Enable Video Player (Host Mode)</span>
+          <span style={{ fontWeight: '600', fontSize: '1rem' }}>開啟播放器 (房主模式)</span>
         </label>
       </div>
 
@@ -891,9 +893,9 @@ function Room({ roomId, onLeave }) {
 
       {/* Controls */}
       <div className="control-panel">
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-          <label style={{ fontWeight: 'bold' }}>Volume</label>
-          <span>{volume}%</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', alignItems: 'center' }}>
+          <label style={{ fontWeight: '600', fontSize: '0.9rem', opacity: 0.8 }}>音量控制</label>
+          <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--accent-color)' }}>{volume}%</span>
         </div>
         <input 
           type="range" 
@@ -901,158 +903,48 @@ function Room({ roomId, onLeave }) {
           max="100" 
           value={volume} 
           onChange={handleVolumeChange} 
+          style={{ marginBottom: '10px' }}
         />
 
-        <button
-          type="button"
-          onClick={toggleMute}
-          disabled={!currentVideo}
-          style={{ width: '100%', marginTop: '15px' }}
-        >
-          {roomMuted ? '🔊 取消靜音' : '🔇 靜音'}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => sendReplay().catch(() => {})}
-          disabled={!currentVideo}
-          style={{ width: '100%', marginTop: '15px' }}
-        >
-          🔁 重播
-        </button>
-
-        <button 
-          onClick={() => advanceSong().catch(() => {})}
-          style={{ width: '100%', marginTop: '15px', backgroundColor: 'var(--warning-color)', color: '#000' }}
-        >
-          ⏭️ Skip Current Song
-        </button>
-      </div>
-
-      {/* Lyrics */}
-      <div style={{ marginTop: '16px', marginBottom: '20px', padding: '12px', backgroundColor: 'var(--surface-color)', borderRadius: '8px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-          <h3 style={{ margin: 0 }}>歌詞</h3>
+        <div className="control-grid">
           <button
             type="button"
-            onClick={() => loadLyricsForCurrent({ force: true, overrideTrackName: lyricsOverrideTrackName || '' }).catch(() => {})}
-            disabled={!currentVideo || lyricsLoading}
-            style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem' }}
+            className="control-btn-circle"
+            onClick={toggleMute}
+            disabled={!currentVideo}
+            title={roomMuted ? '取消靜音' : '靜音'}
           >
-            {lyricsLoading ? '...' : '重新抓取'}
+            {roomMuted ? '🔊' : '🔇'}
           </button>
-        </div>
 
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
-          <input
-            type="text"
-            value={lyricsManualTrackName}
-            onChange={(e) => setLyricsManualTrackName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                handleManualLyricsSearch();
-              }
-            }}
-            placeholder="手動輸入歌名/關鍵字來找歌詞"
-            disabled={!currentVideo || lyricsLoading}
-            style={{ flex: 1, padding: '8px', margin: 0 }}
-          />
           <button
             type="button"
-            onClick={handleManualLyricsSearch}
-            disabled={!currentVideo || lyricsLoading || !(lyricsManualTrackName || '').trim()}
-            style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
+            className="control-btn-circle"
+            onClick={() => sendReplay().catch(() => {})}
+            disabled={!currentVideo}
+            title="重播"
           >
-            用歌名搜尋
+            🔁
           </button>
+
+          <button 
+            type="button"
+            className="control-btn-circle skip"
+            onClick={() => advanceSong().catch(() => {})}
+            disabled={!currentVideo}
+            title="切歌"
+          >
+            ⏭️
+          </button>
+
           <button
             type="button"
-            onClick={clearManualLyricsSearch}
-            disabled={!currentVideo || lyricsLoading || !lyricsOverrideTrackName}
-            style={{ margin: 0, padding: '6px 10px', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
+            className="control-btn lyrics"
+            onClick={() => setShowLyricsModal(true)}
           >
-            清除
+            🎵 顯示歌詞
           </button>
         </div>
-
-        {lyricsOverrideTrackName ? (
-          <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '8px' }}>
-            目前搜尋關鍵字：{lyricsOverrideTrackName}
-          </div>
-        ) : null}
-
-        <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '8px' }}>
-          <div>
-            AI 解析：
-            {lyricsAiDebug.status === 'loading' ? '解析中…' : ''}
-            {lyricsAiDebug.status === 'idle' ? '尚未解析' : ''}
-            {lyricsAiDebug.status === 'skipped' ? '已跳過（使用手動搜尋）' : ''}
-            {lyricsAiDebug.status === 'ok' ? ((lyricsAiDebug.trackName || lyricsAiDebug.artistName || lyricsAiDebug.raw) ? '已解析' : '已解析（無結果）') : ''}
-            {lyricsAiDebug.status === 'error' ? '失敗' : ''}
-            {lyricsAiDebug.model ? `（${lyricsAiDebug.model}）` : ''}
-          </div>
-          <div>AI 歌名：{lyricsAiDebug.trackName ? lyricsAiDebug.trackName : '—'}</div>
-          {lyricsAiDebug.raw ? (
-            <div style={{ marginTop: '6px' }}>
-              <div style={{ marginBottom: '4px' }}>AI 原始輸出：</div>
-              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '0.8rem', opacity: 0.9 }}>
-                {lyricsAiDebug.raw}
-              </pre>
-            </div>
-          ) : null}
-          {lyricsAiDebug.error ? (
-            <div style={{ color: 'var(--warning-color)', marginTop: '4px' }}>
-              {lyricsAiDebug.error}
-            </div>
-          ) : null}
-        </div>
-
-        {(lyricsSearchDebug.trackName || lyricsSearchDebug.artistName || lyricsSearchDebug.source) ? (
-          <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '8px' }}>
-            本次歌詞查詢：
-            {lyricsSearchDebug.source ? `（${lyricsSearchDebug.source}）` : ''}
-            {' '}{lyricsSearchDebug.trackName || '—'}
-            {lyricsSearchDebug.artistName ? ` / ${lyricsSearchDebug.artistName}` : ''}
-          </div>
-        ) : null}
-
-        {currentVideo ? (
-          <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '8px' }}>
-            {lyricsMeta?.title || normalizeYouTubeTitleForLyrics(currentVideo.title)}
-            {lyricsMeta?.artist || currentVideo.author ? ` • ${lyricsMeta?.artist || normalizeYouTubeAuthorForLyrics(currentVideo.author)}` : ''}
-          </div>
-        ) : (
-          <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '8px' }}>
-            目前沒有播放中的歌曲
-          </div>
-        )}
-
-        {lyricsError ? (
-          <div style={{ color: 'var(--warning-color)', textAlign: 'left', marginBottom: '8px', fontSize: '0.9rem' }}>
-            {lyricsError}
-          </div>
-        ) : null}
-
-        {lyricsRequestUrl ? (
-          <div style={{ marginBottom: '8px', fontSize: '0.85rem' }}>
-            <a href={lyricsRequestUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--text-secondary)' }}>
-              測試歌詞 API 連結
-            </a>
-          </div>
-        ) : null}
-
-        {lyricsText ? (
-          <pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: '0.95rem', lineHeight: 1.5 }}>
-            {lyricsText}
-          </pre>
-        ) : (
-          !lyricsError && currentVideo ? (
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-              {lyricsLoading ? '載入中…' : '尚未取得歌詞'}
-            </div>
-          ) : null
-        )}
       </div>
 
       {/* Search */}
@@ -1287,7 +1179,185 @@ function Room({ roomId, onLeave }) {
         </SortableContext>
       </DndContext>
     </div>
-  );
+
+    {/* Lyrics Modal - Moved outside container to fix stacking and click issues */}
+    {showLyricsModal && (
+      <div className="glass-overlay" onClick={() => setShowLyricsModal(false)}>
+        <div className="glass-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="glass-header">
+            <h3 style={{ margin: 0, fontSize: '1.4rem' }}>🎵 歌詞</h3>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                type="button"
+                onClick={() => loadLyricsForCurrent({ force: true, overrideTrackName: lyricsOverrideTrackName || '' }).catch(() => {})}
+                disabled={!currentVideo || lyricsLoading}
+                style={{ margin: 0, padding: '8px 16px', fontSize: '0.85rem', background: 'rgba(255,255,255,0.1)' }}
+              >
+                {lyricsLoading ? '...' : '重新抓取'}
+              </button>
+              <button
+                onClick={() => setShowLyricsModal(false)}
+                style={{
+                  backgroundColor: 'rgba(255,255,255,0.1)',
+                  border: 'none',
+                  fontSize: '1.2rem',
+                  color: '#fff',
+                  cursor: 'pointer',
+                  padding: '8px 12px',
+                  borderRadius: '50%',
+                  margin: 0,
+                  width: '40px',
+                  height: '40px'
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          <div className="glass-content">
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '16px' }}>
+              <input
+                type="text"
+                className="glass-input"
+                value={lyricsManualTrackName}
+                onChange={(e) => setLyricsManualTrackName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleManualLyricsSearch();
+                  }
+                }}
+                placeholder="手動輸入歌名/關鍵字"
+                disabled={!currentVideo || lyricsLoading}
+                style={{ flex: 1, background: 'rgba(255,255,255,0.05)' }}
+              />
+              <button
+                type="button"
+                onClick={handleManualLyricsSearch}
+                disabled={!currentVideo || lyricsLoading || !(lyricsManualTrackName || '').trim()}
+                style={{ margin: 0, padding: '10px 16px', fontSize: '0.85rem', whiteSpace: 'nowrap', background: 'var(--accent-color)', color: 'white', border: 'none' }}
+              >
+                搜尋
+              </button>
+              <button
+                type="button"
+                onClick={clearManualLyricsSearch}
+                disabled={!currentVideo || lyricsLoading || !lyricsOverrideTrackName}
+                style={{ margin: 0, padding: '10px 16px', fontSize: '0.85rem', whiteSpace: 'nowrap', background: 'rgba(255,255,255,0.1)' }}
+              >
+                清除
+              </button>
+            </div>
+
+            {lyricsOverrideTrackName && (
+              <div style={{ color: 'var(--accent-color)', fontSize: '0.85rem', marginBottom: '12px', fontWeight: '600', textShadow: '0 0 10px rgba(62, 166, 255, 0.3)' }}>
+                🔍 目前搜尋：{lyricsOverrideTrackName}
+              </div>
+            )}
+
+            <div style={{ 
+              background: 'rgba(255,255,255,0.05)', 
+              padding: '16px', 
+              borderRadius: '16px', 
+              fontSize: '0.85rem', 
+              marginBottom: '20px',
+              border: '1px solid rgba(255,255,255,0.1)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', opacity: 0.9 }}>
+                <span style={{ fontWeight: '600' }}>AI 解析狀態：</span>
+                <span>
+                  {lyricsAiDebug.status === 'loading' ? '⏳ 解析中…' : ''}
+                  {lyricsAiDebug.status === 'idle' ? '💤 尚未解析' : ''}
+                  {lyricsAiDebug.status === 'skipped' ? '⏩ 已跳過' : ''}
+                  {lyricsAiDebug.status === 'ok' ? '✅ 已完成' : ''}
+                  {lyricsAiDebug.status === 'error' ? '❌ 失敗' : ''}
+                  {lyricsAiDebug.model && ` (${lyricsAiDebug.model})`}
+                </span>
+              </div>
+              {lyricsAiDebug.trackName && (
+                <div style={{ marginTop: '6px', fontWeight: 'bold', color: '#fff' }}>
+                  AI 建議歌名：{lyricsAiDebug.trackName}
+                </div>
+              )}
+              {lyricsAiDebug.raw && (
+                <details style={{ marginTop: '10px' }}>
+                  <summary style={{ cursor: 'pointer', fontSize: '0.75rem', opacity: 0.7, color: 'var(--accent-color)' }}>查看 AI 原始輸出</summary>
+                  <pre style={{ 
+                    margin: '8px 0 0 0', 
+                    whiteSpace: 'pre-wrap', 
+                    fontSize: '0.75rem', 
+                    opacity: 0.9, 
+                    backgroundColor: 'rgba(0,0,0,0.2)', 
+                    padding: '10px', 
+                    borderRadius: '10px',
+                    border: '1px solid rgba(255,255,255,0.05)',
+                    color: '#ccc'
+                  }}>
+                    {lyricsAiDebug.raw}
+                  </pre>
+                </details>
+              )}
+              {lyricsAiDebug.error && (
+                <div style={{ color: '#ff5252', marginTop: '6px', fontWeight: '600' }}>
+                  {lyricsAiDebug.error}
+                </div>
+              )}
+            </div>
+
+            {(lyricsSearchDebug.trackName || lyricsSearchDebug.artistName || lyricsSearchDebug.source) && (
+              <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.8rem', marginBottom: '20px' }}>
+                🔍 本次查詢：
+                {lyricsSearchDebug.source ? `[${lyricsSearchDebug.source}] ` : ''}
+                <span style={{ color: '#fff', fontWeight: '600' }}>{lyricsSearchDebug.trackName || '—'}</span>
+                {lyricsSearchDebug.artistName ? ` / ${lyricsSearchDebug.artistName}` : ''}
+              </div>
+            )}
+
+            {currentVideo && (
+              <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+                <div style={{ fontSize: '1.2rem', fontWeight: 'bold', color: 'white' }}>
+                  {lyricsMeta?.title || normalizeYouTubeTitleForLyrics(currentVideo.title)}
+                </div>
+                <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                  {lyricsMeta?.artist || normalizeYouTubeAuthorForLyrics(currentVideo.author)}
+                </div>
+              </div>
+            )}
+
+            <div style={{ 
+              textAlign: 'center',
+              lineHeight: 1.8,
+              fontSize: '1.1rem',
+              color: '#eee',
+              padding: '0 10px'
+            }}>
+              {lyricsLoading ? (
+                <div style={{ padding: '40px 0', opacity: 0.5 }}>載入中…</div>
+              ) : lyricsText ? (
+                <pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontFamily: 'inherit' }}>
+                  {lyricsText}
+                </pre>
+              ) : (
+                <div style={{ padding: '40px 0', opacity: 0.5 }}>
+                  {lyricsError || '尚未取得歌詞'}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {lyricsRequestUrl && (
+            <div className="glass-footer" style={{ textAlign: 'center', fontSize: '0.8rem' }}>
+              <a href={lyricsRequestUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--accent-color)', textDecoration: 'none' }}>
+                🔗 歌詞來源 API 連結
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+  </>
+);
 }
 
 export default Room;
