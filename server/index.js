@@ -179,6 +179,7 @@ app.post('/api/ai/parse-song', async (req, res) => {
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
+      reasoning: { effort: 'low' },
       temperature: 0,
       top_p: 1,
       presence_penalty: 0,
@@ -197,6 +198,10 @@ app.post('/api/ai/parse-song', async (req, res) => {
     if (withResponseFormat && !AI_UNSUPPORTED_PARAMS.has('response_format')) {
       // OpenAI-compatible strict JSON mode (if supported by provider).
       payload.response_format = { type: 'json_object' };
+    }
+
+    if (AI_UNSUPPORTED_PARAMS.has('reasoning')) {
+      delete payload.reasoning;
     }
 
     if (AI_UNSUPPORTED_PARAMS.has('max_tokens')) {

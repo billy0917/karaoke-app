@@ -60,6 +60,7 @@ function buildPayload({ model, title, author, maxTokens = null }) {
       { role: 'system', content: system },
       { role: 'user', content: user },
     ],
+    reasoning: { effort: 'low' },
     temperature: 0,
     top_p: 1,
     presence_penalty: 0,
