@@ -17,16 +17,26 @@
   box-sizing: border-box;
 }
 
+html {
+  height: 100%;
+  background-color: #000;
+}
+
 body {
   margin: 0;
+  padding: 20px 0; /* 用 padding 代替 container 的 margin，防止邊距重疊 */
   font-family: 'Roboto', 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   background-image: linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6)), url('https://lh3.googleusercontent.com/d/1zA_eVngBOWMpGnE7eU4TgqKCgC6DcqH2');
   background-size: cover;
   background-position: center;
   background-attachment: fixed;
+  background-repeat: no-repeat;
   color: var(--text-primary);
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 /* Glassmorphism Base */
@@ -56,7 +66,8 @@ body {
 
 .container {
   max-width: 800px;
-  margin: 20px auto;
+  width: 95%; /* 在小螢幕上保持邊距 */
+  margin: 0 auto;
   padding: 24px;
   text-align: center;
   min-height: calc(100vh - 40px);
